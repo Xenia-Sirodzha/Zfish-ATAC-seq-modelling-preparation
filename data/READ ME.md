@@ -1,7 +1,6 @@
 All data in this folder was produced by the code. While the files `zfish_atac.10hpf.rds` and `zfish_snATAC_seq_pk_mtrx.10hpf.rds` were produced by the code, due to their size, they are not part of this repository. If necessary, they are available upon request.
 
 The following files were used as input:
->>>>>>> Stashed changes
 - `atac_all.metaData.csv` 
 - `Cell-type_Peak_Matrix.rds` 
 - `SupplT2.csv`
