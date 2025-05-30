@@ -1,0 +1,388 @@
+---
+title: "Step 2: Establishing a workflow for ATAC-seq-QC"
+subtitle: "Part B (step 2.2): ATAC-seq-data-analysis-QC with manual ln(1+x) normalization"
+date: "2025-02-10"
+author: Xenia Sirodzha
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+---
+
+Here, I aimed to establish a workflow for ATAC-Seq-QC by performing typical ATAC-seq-QC steps on a reduced set of data. All steps were approved by Alexander Sasse. 
+
+As the normalization options provided for Seurat's `AggregateExpression` function are not sufficently normalizing the ATAC-seq data, in this step, the data was pseudo-bulked using Seurat's `AggregateExpression` function and normalized manually afterwards. To assess the effects of this transformations the data was partially visualized. All plots were analogous to the ones in "02-06-ATAC-Seq-Analysis-Step-1.2.1 seurat norm". Overall, the goal was to determine which normalization method to use ATAC-seq QC. 
+
+# Libraries
+
+These are the packages required for the code below.
+
+```{r libraries}
+library(tidyverse) 
+library(binom)
+library(lubridate)
+library(broom)
+library(scales) #for scale transformations
+library(cowplot) #arranging plots 
+library(ggpubr)
+library(ggridges)
+library(ggthemes) #stylising plots
+library(ggplot2)
+library(ggsci)
+library(wesanderson)
+library(readxl) #for loading excel files
+library(Seurat) #for rna-seq data, atac-seq data
+library(Signac) #for atac seq data
+```
+
+
+# 1. Loading and inspecting 
+
+First, I loaded the sn-ATAC-seq Seurat Object, which contains the count matrix of 5 cell types and 1000 randomly selected peaks. More details about this Seurat Object can be found in "02-06-ATAC-Seq-Analysis-Step-1.1". 
+```{r loading and overview of sub_zfish_atac}
+#load file
+
+sub_zfish_atac <- readRDS("Data/sub_zfish_atac.rds")
+glimpse(sub_zfish_atac)
+
+# overview 
+
+sub_zfish_atac@assays$atac$counts[1:10,1:2]
+```
+
+Overall, this Seurat object contains both the count matrix and the meta data. 
+
+# 2. Data transformation
+As pseudobulking using Seurat's `AggregateExpression` function is functional (more details in "02-06-ATAC-Seq-Analysis-Step-1.2.1 seurat norm"), I used this function for this operation. Then, I normalized manually with a ln(1+x) transformation by using my own code. 
+To ensure that all non determinant code is reproducible, I set a seed.
+
+```{r setting seed for reproducibility}
+## ensuring always the same random result
+set.seed(59762489)
+ 
+#testing if setting the seed worked
+sample(1000,1) #running multiple times, same result
+```
+
+## 2.1 Pseudo bulking and normalisation
+
+To generate a matrix, which contains all un-normalized counts per cell type, I pseudo-bulked the count data from the `sub_zfish_atac` object by setting the arguments to: `return.seurat=F` and no specified normalization method, which is the default of this function.
+
+```{r pseudo-bulking}
+psd.bulk.sub_atc.lg1x= AggregateExpression(sub_zfish_atac, group.by = "celltype")
+```
+
+During ln(1+x) normalization, to calculate the average counts per 1000 cells before applying the ln transformation (`log` function in R) , all counts need to be divided by the number of cells in each celltype. To achieve this I performed the steps below.
+
+First, I extracted the number of cells for each celltype. 
+```{r extraction of number of cells per celltype}
+sub_zfish_atac@meta.data %>% 
+  group_by(celltype) %>% 
+  tally() %>% #extracts
+  pivot_wider(names_from = celltype, values_from = n) %>% 
+  as.matrix() -> n_cells
+n_cells
+```
+
+Then, I tested whether dividing the counts by the number of cells within each cell type would work with the loop down below on a small scale.
+
+```{r testing the loop on a small scale}
+psd.bulk.sub_atc.lg1x$atac[1:5,1:5] -> test
+test
+
+## Loop through columns in n_cells
+for (i in seq_along(colnames(n_cells))) {
+  ct <- colnames(n_cells)[i]  # Extract column name from n_cells
+  
+  ## Loop through columns in test
+  for (j in seq_along(colnames(psd.bulk.sub_atc.lg1x$atac[1:5,1:5]))) {
+    atc <- colnames(test)[j]  # Extract column name
+    
+    ## If names match divide and store in test
+    if (atc == ct) {
+      test[,j] <- (test[, j] / n_cells[, i])*1000
+      break  # stop if everything is matched 
+    }
+  }
+}
+
+test
+
+```
+
+The loop was suitable for the operation. So i proceeded with the operations below.
+
+```{r performing the loop}
+#Dividing the counts by the number of cells in each cell type
+
+psd.bulk.sub_atc.lg1x$atac[1:5,1:5] #input
+
+for (i in seq_along(colnames(n_cells))) {
+  ct <- colnames(n_cells)[i]  
+  
+
+  for (j in seq_along(colnames(psd.bulk.sub_atc.lg1x$atac))) {
+    atc <- colnames(psd.bulk.sub_atc.lg1x$atac)[j]  
+    
+
+    if (atc == ct) {
+      psd.bulk.sub_atc.lg1x$atac[,j] <- (psd.bulk.sub_atc.lg1x$atac[, j] / n_cells[, i])*1000
+      break  # stop if everything is matched 
+    }
+  }
+}
+
+psd.bulk.sub_atc.lg1x$atac[1:5,1:5] #output
+
+```
+
+Then to log transform, I tested the operation on a small scale and proceeded afterwards.
+
+```{r testing log transformation on a small scale}
+#Test what the operation does on a small scale
+
+psd.bulk.sub_atc.lg1x$atac[1:3,1:5] #input
+
+log(psd.bulk.sub_atc.lg1x$atac[1:3,1:5]+1) #output
+```
+
+I transformed the data in the manner shown below.
+
+```{r performing log transformation}
+psd.bulk.sub_atc.lg1x=log(psd.bulk.sub_atc.lg1x$atac+1)
+
+psd.bulk.sub_atc.lg1x[1:10,1:5]
+```
+
+
+## 2.2 Data wrangling for plotting by celltype
+
+After ln(1+x) normalization, I wrangled the data to be tidyverse ggplot compatible. First, I converted the matrix to a data frame, then I calculated the values which will be plotted as well(sum of pk_counts, coefficient of variance (cv)).
+
+```{r data wrangling}
+as.data.frame(psd.bulk.sub_atc.lg1x)%>% 
+  pivot_longer(cols=!contains("rownames"), ,values_to = "pk_counts", names_to = "celltype") %>% 
+  mutate(pk_count_sum= sum(pk_counts)) %>% 
+  mutate(cv=sd(pk_counts) / mean(pk_counts)) %>% 
+  group_by(celltype) %>% 
+  mutate(pk_count_sum_celltype= sum(pk_counts)) %>% 
+  mutate(cv_celltype=sd(pk_counts) / mean(pk_counts)) %>% 
+  mutate(all="all celltypes")-> df_psd.bulk.sub_atc.lg1x
+
+df_psd.bulk.sub_atc.lg1x
+```
+
+
+# 3 Visualization
+
+Overall, all data was plotted analogically to the visualization in "02-06-ATAC-Seq-Analysis-Step-1.2.1 seurat norm". 
+
+## 3.1 Distribution after pseudo-bulking by celltype
+
+Counts were plotted in a histogram overall and then by cell type. 
+```{r histograms counts}
+# Overall
+
+df_psd.bulk.sub_atc.lg1x %>% 
+ ggplot(aes(x=pk_counts))+geom_histogram(binwidth = 0.2, color="gray15", alpha=0.8)+
+ scale_y_continuous(breaks = scales::breaks_pretty(n=10))+
+  coord_fixed(ratio = 0.03)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->dis.counts.1
+
+
+# by cell type 
+
+ ggplot(df_psd.bulk.sub_atc.lg1x, aes(x=pk_counts, fill = celltype))+
+  geom_histogram(binwidth = 0.2, color="gray15", alpha=0.8)+
+  scale_y_continuous(breaks = scales::breaks_pretty(n=10))+
+  facet_wrap(facets = "celltype")+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->dis.counts.cell.1
+
+# display
+
+dis.counts.1|dis.counts.cell.1
+```
+
+Generally, counts are somewhat normally distributed. There are no cell type specific trends. Most counts are between the values 1 and 5 which can be typical for well normalized ATAC-seq-data.
+
+## 3.2 Sum of all peaks
+
+I counted and visualized the sum of all peaks by cell type and in general.
+
+In addition, I extracted the value for the sum of all peaks. It is  12770.74. Which is higher than with either Seurat provided normalization method (see 02-06-ATAC-Seq-Analysis-Step-1.2.1 seurat norm). 
+```{r extracting value sum of all peaks}
+unique(df_psd.bulk.sub_atc.lg1x$pk_count_sum)
+```
+
+The sums of all peaks were visualized in a barplot.
+```{r bar plot sum of all peaks}
+
+# Overall
+
+df_psd.bulk.sub_atc.lg1x %>% 
+  ungroup() %>% 
+  distinct(all, pk_count_sum) %>% 
+  ggplot(aes(x=all, y=pk_count_sum))+
+  geom_col(alpha=0.8, color="gray10")+
+  coord_fixed(ratio = 0.0002)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> sum.peaks.all.1
+
+
+# by cell type
+
+df_psd.bulk.sub_atc.lg1x %>% 
+  group_by(celltype) %>% 
+  distinct(pk_count_sum_celltype, pk_count_sum) %>% 
+  ggplot(aes(x=celltype, y=pk_count_sum_celltype, fill=celltype))+
+  geom_col(alpha=0.8, color="gray10")+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> sum.peaks.celltype.1
+
+sum.peaks.all.1|sum.peaks.celltype.1
+```
+
+Apart from the YSL/presumptive endoderm cells with a little over 3000 peak count sum, all cells have a similar peak count sum. Overall, the proportion of the sum of all peaks is similar to previous normalization methods. 
+
+## 3.3 Coefficient of variation 
+
+The coefficient of variation was visualized as the sum of all peaks previously.
+```{r bar plot coefficient of variation}
+
+# Overall
+
+df_psd.bulk.sub_atc.lg1x %>% 
+  ungroup() %>% 
+  distinct(all, cv) %>% 
+  ggplot(aes(x=all, y=cv ))+
+  geom_col(alpha=0.8, color="gray10")+
+  scale_y_continuous(n.breaks=10)+
+  coord_fixed(ratio = 6)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> cv.all.1
+
+
+# by cell type
+
+df_psd.bulk.sub_atc.lg1x %>% 
+  group_by(celltype) %>% 
+  distinct(cv_celltype, cv) %>% 
+  ggplot(aes(x=celltype, y=cv_celltype, fill=celltype))+
+  geom_col(alpha=0.8, color="gray10")+
+  scale_y_continuous(n.breaks=10)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->cv.celltype.1
+
+cv.all.1|cv.celltype.1
+```
+
+Overall, coefficients of variation of each cell type are very similar to one another and to the coefficient of variation of all cells. However, YSL/presumptive endoderm cells have the lowest coefficient of variation. 
+
+## 3.4 Count distribution by cell type
+
+Then, just as previously count distribution was visualized with a violin plot.
+
+```{r violin plot counts}
+df_psd.bulk.sub_atc.lg1x %>% 
+  mutate(all="all") %>% 
+ ggplot( aes( x=all, y=pk_counts))+
+  geom_violin(color="grey20", alpha=0.3, fill="gray30", trim=F)+
+  coord_fixed(ratio = 0.3)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.all.1
+
+
+ ggplot(df_psd.bulk.sub_atc.lg1x, aes(x=celltype, y=pk_counts, fill = celltype))+
+  geom_violin(color="grey20", alpha=0.3, trim=F)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.cells.1
+ 
+ v.plot.all.1|v.plot.cells.1
+```
+
+To visualize median and quantiles, a boxplot was added. 
+```{r violin plot counts plus boxplot}
+df_psd.bulk.sub_atc.lg1x %>% 
+  mutate(all="all") %>% 
+ ggplot( aes( x=all, y=pk_counts))+
+  geom_violin(color="grey20", alpha=0.3, fill="gray30", trim=F)+
+  geom_boxplot(width = 0.07)+
+  stat_boxplot(geom ='errorbar', width=0.2, position=position_dodge(0.5))+
+  scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  coord_fixed(ratio = 0.3)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.all.box.1
+
+
+ ggplot(df_psd.bulk.sub_atc.lg1x, aes(x=celltype, y=pk_counts, fill = celltype))+
+  geom_violin(color="grey20", alpha=0.3, trim=F)+
+  geom_boxplot(width = 0.07)+
+  stat_boxplot(geom ='errorbar', width=0.2, position=position_dodge(0.5))+
+    scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.cells.box.1
+ 
+ v.plot.all.box.1|v.plot.cells.box.1
+```
+
+The counts are similarly distributed, however values are more centered around count value 2.5. Most counts have values ranging from 0.5 to 4. In addition, YSL/presumptive endoderm cells have higher counts than all other cell types. In contrast to the normalized data  in "02-06-ATAC-Seq-Analysis-Step-1.2.1 seurat norm", most counts range from 0.5 to 5, which is similar to what one would expect in well-normalized ATAC-seq data. 
+
+# 4. Summary
+
+Overall, manual ln(1+x) normalization after pseudo-bulking, leads to normally distributed counts with a wider range than in with Seurat's `AggregateExpression` function normalized data. In addition, the values are centered around a higher value 2.5. Therefore, it is likely that this the normalization method I should use when I perform ATAC-seq QC. Nonetheless, both log based normalization methods were applied to the entire data set after pseudobulking. 
+
+
+# Session info
+
+Information about the coding environment can be found below.
+```{r session info}
+sessionInfo()
+```

@@ -1,0 +1,92 @@
+---
+title: "Step 4: Preparation of the sn-ATAC-seq-data set for modelling by Alexander Sasse's group"
+subtitle: "Step 4.2: Pseudobulking and normalizing subsetted celltypes"
+date: "2025-03-06"
+author: Xenia Sirodzha
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+---
+
+# Libraries 
+
+These are the packages required for the coding in this document.
+```{r libraries}
+library(tidyverse) 
+library(binom)
+library(broom)
+library(Seurat) #for rna-seq data, atac-seq data
+library(Signac) #for atac seq data
+```
+
+# Data loading
+
+First, the data needed for normalization was loaded. Its origin is further explained in "03-06-ATAC-Seq-Analysis-Step-4.1-subset-celltypes".
+```{r data loading}
+readRDS("Data/psd.bulk.zfish_atac.10hpf.rds") -> psd.bulk.zfish_atac.10hpf
+readRDS("Data/zfish_atac.10hpf.rds") ->zfish_atac.10hpf
+```
+
+# Data transformation
+
+Overall, the data was transformed analogous to "02-11-ATAC-Seq-Analysis-Step-3.1.1-log 1+x on all celltypes".
+
+First, the number of cells was extracted.
+```{r extracting number of cells}
+zfish_atac.10hpf@meta.data %>% 
+  group_by(celltype) %>% 
+  tally() %>% 
+  pivot_wider(names_from = celltype, values_from = n) %>% 
+  as.matrix() -> n_cells
+n_cells
+```
+
+
+Then, I employed the following loop to extract the correct number of cells of each cell type to divide the counts of the matrix containing the pseudo-bulk with. 
+```{r manual normalization}
+#Dividing the counts by the number of cells in each cell type
+
+psd.bulk.zfish_atac.10hpf$atac[1:5,1:5] #input
+
+for (i in seq_along(colnames(n_cells))) {
+  ct <- colnames(n_cells)[i]  #extracting cell type names
+  
+#loop along cell type names in the pseudo bulk matrix
+  for (j in seq_along(colnames(psd.bulk.zfish_atac.10hpf$atac))) {
+    atc <- colnames(psd.bulk.zfish_atac.10hpf$atac)[j]  
+    
+#if the colnames match divide by the number of cells
+    if (atc == ct) {
+      psd.bulk.zfish_atac.10hpf$atac[,j] <- (psd.bulk.zfish_atac.10hpf$atac[, j] / n_cells[, i])*1000
+      break  # stop if everything is matched 
+    }
+  }
+}
+
+psd.bulk.zfish_atac.10hpf$atac[1:5,1:5] #output
+
+```
+
+After that, the matrix was ln(1+x) transformed in the manner seen below.
+
+```{r manual ln transformation}
+psd.bulk.zfish_atac.10hpf.lg1x=log(psd.bulk.zfish_atac.10hpf$atac+1)
+
+psd.bulk.zfish_atac.10hpf.lg1x[1:10,1:5] #output
+```
+
+Lastly, it was saved as a csv file for easier readability and further use.
+```{r saving as csv, eval=FALSE}
+#save as file
+
+write.csv(psd.bulk.zfish_atac.10hpf.lg1x, file = "Data/psd.bulk.zfish_atac.10hpf.lg1x.csv")
+```
+
+# Session info 
+
+```{r session info}
+sessionInfo()
+```

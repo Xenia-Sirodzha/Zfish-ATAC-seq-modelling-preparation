@@ -1,0 +1,608 @@
+---
+title: "Step 2: Establishing a workflow for ATAC-seq-QC"
+subtitle: "Part A (step 2.1): What seurat normalization method should be used?"
+date: "2025-02-06"
+author: Xenia Sirodzha
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+---
+
+Here, I aimed to establish a workflow for ATAC-Seq-QC by performing typical ATAC-seq-QC steps on a reduced set of data. All steps were approved by Alexander Sasse. 
+
+To be precise, in this step, the data was normalized and pseudo-bulked using Seurat's `AggregateExpression` function. To assess the effects of these transformations the data was partially visualized. Overall, the goal was to determine what normalization method, which is integrated into the `AggregateExpression` function from the Seurat package to use. 
+
+# Libraries
+
+These are the packages required for the code below.
+
+```{r libraries}
+library(tidyverse) 
+library(binom)
+library(lubridate)
+library(broom)
+library(scales) #for scale transformations
+library(cowplot) #arranging plots 
+library(ggpubr)
+library(ggridges)
+library(ggthemes) #stylising plots
+library(ggplot2)
+library(ggsci) 
+library(wesanderson)
+library(readxl) #for loading excel files
+library(Seurat) #for rna-seq data, atac-seq data
+library(Signac) #for atac seq data
+```
+
+
+
+# 1. Loading and inspecting
+
+First, I loaded the sn-ATAC-seq Seurat Object, which contains the count matrix of 5 cell types and 1000 randomly selected peaks. More details about this Seurat Object can be found in "02-06-ATAC-Seq-Analysis-Step-1.1". 
+```{r loading and overview of sub_zfish_atac}
+#loading file
+sub_zfish_atac <- readRDS("Data/Lin_2023_zfish_snATAC-seq/sub_zfish_atac.rds")
+
+#overview
+glimpse(sub_zfish_atac) #overview over file
+sub_zfish_atac@assays$atac$counts[1:10,1:2] #overview count matrix
+```
+Overall, this Seurat object contains both the count matrix and the meta data. 
+
+# 2. Pseudo bulking and normalization
+
+At the start, I performed pseudo-bulking using Seurat's `AggregateExpression` function. 
+As, I was not sure which Seurat provided normalization method to use, I performed both logarithmic and centralized logarithmic normalization and looked whether and how the output differed. 
+
+To ensure that the randomized normalizations from Seurat are reproducible, I set a seed.
+```{r setting seed for reproducibility}
+## ensuring always the same random result
+set.seed(59762489)
+ 
+#testing if setting the seed worked
+sample(1000,1) #running multiple times, same result
+```
+
+Next, I pseudo-bulked and normalized the Seurat Object `sub_zfish_atac`. The values were aggregated by cell type.
+```{r pseudobulking and normalization}
+# Normalizing with Seurat
+psd.bulk.sub_atc.clr= AggregateExpression(sub_zfish_atac, group.by = "celltype", normalization.method = "CLR", return.seurat = T)
+psd.bulk.sub_atc.lgn= AggregateExpression(sub_zfish_atac, group.by = "celltype", normalization.method = "LogNormalize", return.seurat = T)
+```
+
+Then, I checked whether the pseudo-bulking worked as intended and whether the output differed. I expect that there will be only 5 columns left for the 5 cell types and that the output will differ
+```{r overview output}
+#before pseudo bulking
+dim(sub_zfish_atac@assays$atac) 
+
+#after pseudo bulking
+dim(psd.bulk.sub_atc.clr$atac$counts) #values are stored in counts layer
+
+dim(psd.bulk.sub_atc.lgn$atac$counts) 
+
+#testing if the output is identical
+identical(psd.bulk.sub_atc.clr@assays$atac$data, psd.bulk.sub_atc.lgn@assays$atac$data)
+
+#overview output
+glimpse(psd.bulk.sub_atc.clr)
+glimpse(psd.bulk.sub_atc.lgn)
+```
+
+The outputs meet the expectations. 
+
+# 3 Assessement of transformation by visualization by celltype
+
+## 3.1 Data wrangling for visualization 
+
+Next, to assess if the transformation is suitable for quality control, I analysed and visualised the data. 
+
+To achieve this, the normalised counts needed to be extracted and converted into a ggplot tidyverse compatible format: a data frame. I performed analysis and visualization for both counts in an analogical manner.
+
+First, I calculated the sum of all peaks and the coefficient of variance (cv).
+```{r data wrangling for ggplot}
+## extracting tibbles 
+
+# CLR
+df_psd.bulk_atc.clr=as_tibble(psd.bulk.sub_atc.clr@assays$atac$data, rownames="rownames")
+
+# LogNormalize
+
+df_psd.bulk_atc.lgn=as_tibble(psd.bulk.sub_atc.lgn@assays$atac$data, rownames="rownames")
+
+
+## calculating sum over all peaks and coefficient of variance of all peaks
+
+# CLR:
+df_psd.bulk_atc.clr %>% 
+  pivot_longer(cols=!contains("rownames"), ,values_to = "pk_counts", names_to = "celltype") %>% 
+  mutate(pk_count_sum= sum(pk_counts)) %>% 
+  mutate(cv=sd(pk_counts) / mean(pk_counts)) %>% 
+  group_by(celltype) %>% 
+  mutate(pk_count_sum_celltype= sum(pk_counts)) %>% 
+  mutate(cv_celltype=sd(pk_counts) / mean(pk_counts)) %>% 
+  mutate(all="all celltypes")-> df_psd.bulk_atc.clr
+
+# LogNormalize
+
+df_psd.bulk_atc.lgn %>% 
+  pivot_longer(cols=!contains("rownames"), ,values_to = "pk_counts", names_to = "celltype") %>% 
+  mutate(pk_count_sum= sum(pk_counts)) %>% 
+  mutate(cv=sd(pk_counts) / mean(pk_counts)) %>% 
+  group_by(celltype) %>% 
+  mutate(pk_count_sum_celltype= sum(pk_counts)) %>% 
+  mutate(cv_celltype=sd(pk_counts) / mean(pk_counts)) %>% 
+  mutate(all="all celltypes")-> df_psd.bulk_atc.lgn
+```
+
+This code results in two data sets which have identical column names.
+```{r overview df_psd.bulk_atc.clr}
+df_psd.bulk_atc.clr
+```
+
+```{r overview df_psd.bulk_atc.lgn}
+df_psd.bulk_atc.lgn
+```
+
+
+To plot a histogram, I also require the counts of all cells in a long format. This is achieved with the code below.
+
+```{r data wrangling for geom_histogram}
+df_pk_mtrx= as_tibble(sub_zfish_atac$atac$counts, rownames="rownames")
+df_pk_mtrx %>% pivot_longer(cols=!contains("rownames"), ,values_to = "pk_counts", names_to = "id") -> df_pk_mtrx.l
+df_pk_mtrx.l
+```
+
+## 3.2 Visualization 
+
+Here, the data was visualized to assess what normalization method to use for ATAC-Seq-QC. All plots were generated using the tidyverse ggplot package. 
+
+### 3.2.1 Cell counts histogram before transformation
+
+I plotted counts before transformation as a histogram.
+```{r histogram all cells before transformation}
+df_pk_mtrx.l %>% 
+  ggplot(aes(x=pk_counts))+geom_histogram(binwidth = 0.7, color="gray15", alpha=0.8)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none")
+```
+
+Most values were 0 therefore, I excluded them before plotting again. 
+
+```{r histogram all cells before transformation without 0s}
+df_pk_mtrx.l %>% 
+  filter(pk_counts!=0) %>% 
+  ggplot(aes(x=pk_counts))+geom_histogram(binwidth = 0.5, color="gray15", alpha=0.8)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none")
+```
+
+Overall, most peaks have a count of 2 and the distribution is close to a normal distribution.
+
+### 3.2.2 Visualization of "CLR"
+
+In this section, the CLR normalized data was visualized. 
+
+#### 3.2.2.1 Distribution after pseudo-bulking by celltype
+
+Counts were plotted in a histogram overall and then by cell type. 
+
+```{r vis clr: code histograms after transformation}
+# Overall
+
+df_psd.bulk_atc.clr %>% 
+ ggplot(aes(x=pk_counts))+geom_histogram(binwidth = 0.2, color="gray15", alpha=0.8)+
+ scale_y_continuous(breaks = scales::breaks_pretty(n=10))+
+  coord_fixed(ratio = 0.01)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->dis.counts.clr
+
+
+# by cell type
+
+ ggplot(df_psd.bulk_atc.clr, aes(x=pk_counts, fill = celltype))+
+  geom_histogram(binwidth = 0.2, color="gray15", alpha=0.8)+
+  scale_y_continuous(breaks = scales::breaks_pretty(n=10))+
+  facet_wrap(facets = "celltype")+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->dis.counts.cell.clr
+```
+
+They were arranged below. 
+
+```{r vis clr: displaying histograms after transformation}
+dis.counts.clr|dis.counts.cell.clr
+```
+
+Generally, counts are somewhat normally distributed. There are no cell type specific trends. However, most counts are between the values 0 and 1.5 which is not typical for well normalized ATAC-seq-data.
+
+
+#### 3.2.2.2 Sum of all peaks
+
+I counted and visualized the sum of all peaks by cell type and in general.
+
+In addition, I extracted the value for the sum of all peaks. It is 3527.945.
+```{r vis clr: extracting value sum of all peaks}
+unique(df_psd.bulk_atc.clr$pk_count_sum)
+```
+
+The sums of all peaks were visualized in a barplot, analogically to the visualization by histogram
+```{r vis clr: bar plot sum of all peaks}
+
+# Overall
+
+df_psd.bulk_atc.clr %>% 
+  ungroup() %>% 
+  distinct(all, pk_count_sum) %>% 
+  ggplot(aes(x=all, y=pk_count_sum))+
+  geom_col(alpha=0.8, color="gray10")+
+  coord_fixed(ratio = 0.0005)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> sum.peaks.all.clr
+
+
+# by cell type
+
+df_psd.bulk_atc.clr %>% 
+  group_by(celltype) %>% 
+  distinct(pk_count_sum_celltype, pk_count_sum) %>% 
+  ggplot(aes(x=celltype, y=pk_count_sum_celltype, fill=celltype))+
+  geom_col(alpha=0.8, color="gray10")+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> sum.peaks.celltype.clr
+
+sum.peaks.all.clr|sum.peaks.celltype.clr
+```
+
+The YSL/presumptive mesoderm cells have the highest sum of peaks with around 900. But overall they do not differ much. 
+
+#### 3.2.2.3 Coefficient of variation 
+
+The coefficient of variation was visualized as the sum of all peaks previously.
+```{r vis clr: bar plot coefficient of variation}
+# Overall
+
+df_psd.bulk_atc.clr %>% 
+  ungroup() %>% 
+  distinct(all, cv) %>% 
+  ggplot(aes(x=all, y=cv ))+
+  geom_col(alpha=0.8, color="gray10")+
+  scale_y_continuous(n.breaks=10)+
+  coord_fixed(ratio = 5)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> cv.all.clr
+
+
+# by cell type
+
+df_psd.bulk_atc.clr %>% 
+  group_by(celltype) %>% 
+  distinct(cv_celltype, cv) %>% 
+  ggplot(aes(x=celltype, y=cv_celltype, fill=celltype))+
+  geom_col(alpha=0.8, color="gray10")+
+  scale_y_continuous(n.breaks=10)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->cv.celltype.clr
+
+cv.all.clr|cv.celltype.clr
+```
+
+Overall, coefficients of variation of each cell type are very similar to one another and to the coefficient of variation of all cells. However, periderm/epidermis cells have the highest coefficient of variation. 
+
+#### 3.2.2.4 Count distribution by cell type
+
+Then, just as previously count distribution was visualized with a violin plot. 
+
+```{r vis clr: violin plot counts}
+df_psd.bulk_atc.clr %>% 
+  mutate(all="all") %>% 
+ ggplot( aes( x=all, y=pk_counts))+
+  geom_violin(color="grey20", alpha=0.3, fill="gray30", trim=F)+
+  coord_fixed(ratio = 0.5)+
+   scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.all.clr
+
+
+ ggplot(df_psd.bulk_atc.clr, aes(x=celltype, y=pk_counts, fill = celltype))+
+  geom_violin(color="grey20", alpha=0.3, trim=F)+
+    scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.cells.clr
+ 
+ v.plot.all.clr|v.plot.cells.clr
+```
+
+To visualise median and quantiles, a boxplot was added. 
+```{r vis clr: violin plot counts plus boxplot}
+df_psd.bulk_atc.clr %>% 
+  mutate(all="all") %>% 
+ ggplot( aes( x=all, y=pk_counts))+
+  geom_violin(color="grey20", alpha=0.3, fill="gray30", trim=F)+
+  geom_boxplot(width = 0.07)+
+  stat_boxplot(geom ='errorbar', width=0.2, position=position_dodge(0.5))+
+   scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  coord_fixed(ratio = 0.5)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.all.box.clr
+
+
+ ggplot(df_psd.bulk_atc.clr, aes(x=celltype, y=pk_counts, fill = celltype))+
+  geom_violin(color="grey20", alpha=0.3, trim=F)+
+  geom_boxplot(width = 0.07)+
+  stat_boxplot(geom ='errorbar', width=0.2, position=position_dodge(0.5))+
+    scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.cells.box.clr
+ 
+ v.plot.all.box.clr|v.plot.cells.box.clr
+```
+
+The distribution of counts of all celltypes is very similar to each other and the distribution of counts overall. The YSL/presumptive endoderm cells have slightly higher counts overall. Most counts range from 0.5 to 1 and are centered around approximately 0.6. 
+
+### 3.2.3 Visualization of "LogNormalize"
+
+In this section, the LogNormalize normalized data was visualized analogically to CLR normalized data (chapter 3.2.2). 
+
+#### 3.2.3.1 Distribution after pseudo-bulking by celltype
+
+Counts were plotted in a histogram overall and then by cell type.
+```{r vis lgn: histograms after transformation}
+# Overall 
+
+df_psd.bulk_atc.lgn %>% 
+ ggplot(aes(x=pk_counts))+geom_histogram(binwidth = 0.2, color="gray15", alpha=0.8)+
+ scale_y_continuous(breaks = scales::breaks_pretty(n=10))+
+  coord_fixed(ratio = 0.025)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->dis.counts.lgn
+
+
+# by cell type
+
+ ggplot(df_psd.bulk_atc.lgn, aes(x=pk_counts, fill = celltype))+
+  geom_histogram(binwidth = 0.2, color="gray15", alpha=0.8)+
+  scale_y_continuous(breaks = scales::breaks_pretty(n=10))+
+  facet_wrap(facets = "celltype")+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->dis.counts.cell.lgn
+
+dis.counts.lgn|dis.counts.cell.lgn
+```
+
+#### 3.2.3.2 Sum of all peaks
+
+The sum of all peaks is 9091.372, which is much higher than when the data is normalized with CLR. 
+```{r vis lgn: extracting value sum of all peaks}
+unique(df_psd.bulk_atc.lgn$pk_count_sum)
+```
+
+Bar plot sum of all peaks. 
+```{r vis lgn: bar plot sum of all peaks}
+# Overall
+
+df_psd.bulk_atc.lgn %>% 
+  ungroup() %>% 
+  distinct(all, pk_count_sum) %>% 
+  ggplot(aes(x=all, y=pk_count_sum))+
+  geom_col(alpha=0.8, color="gray10")+
+  coord_fixed(ratio = 0.0005)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> sum.peaks.all.lgn
+
+
+#by cell type
+
+df_psd.bulk_atc.lgn %>% 
+  group_by(celltype) %>% 
+  distinct(pk_count_sum_celltype, pk_count_sum) %>% 
+  ggplot(aes(x=celltype, y=pk_count_sum_celltype, fill=celltype))+
+  geom_col(alpha=0.8, color="gray10")+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> sum.peaks.celltype.lgn
+
+sum.peaks.all.lgn|sum.peaks.celltype.lgn
+```
+
+Overall, the sum of all peaks is much higher than when the data is normalized with CLR. The sum of all peaks by cell type differs less between each cell type than in CLR-normalized data.  
+
+
+#### 3.2.3.3 Coefficient of variation 
+
+Bar plot coefficient of variation.  
+```{r vis lgn: bar plot coefficient of variation}
+# Overall
+
+df_psd.bulk_atc.lgn %>% 
+  ungroup() %>% 
+  distinct(all, cv) %>% 
+  ggplot(aes(x=all, y=cv ))+
+  geom_col(alpha=0.8, color="gray10")+
+  scale_y_continuous(n.breaks=10)+
+  coord_fixed(ratio = 5)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> cv.all.lgn
+
+
+# by cell type
+
+df_psd.bulk_atc.lgn %>% 
+  group_by(celltype) %>% 
+  distinct(cv_celltype, cv) %>% 
+  ggplot(aes(x=celltype, y=cv_celltype, fill=celltype))+
+  geom_col(alpha=0.8, color="gray10")+
+  scale_y_continuous(n.breaks=10)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") ->cv.celltype.lgn
+
+cv.all.lgn|cv.celltype.lgn
+```
+
+The coefficients of variation are very similar to CLR-normalized coefficients of variation although they are slightly reduced overall.
+
+
+#### 3.2.3.4 Count distribution by cell type
+
+Violin plots
+```{r vis lgn: violin plot counts}
+
+# Overall 
+
+df_psd.bulk_atc.lgn %>% 
+  mutate(all="all") %>% 
+ ggplot( aes( x=all, y=pk_counts))+
+  geom_violin(color="grey20", alpha=0.3, fill="gray30", trim=F)+
+  coord_fixed(ratio = 0.5)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.all.lgn
+
+
+# by cell type
+
+ ggplot(df_psd.bulk_atc.lgn, aes(x=celltype, y=pk_counts, fill = celltype))+
+  geom_violin(color="grey20", alpha=0.3, trim=F)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.cells.lgn
+ 
+ v.plot.all.lgn|v.plot.cells.lgn
+```
+
+Violin plots with a boxplot inside.
+```{r vis lgn: violin plot counts plus boxplot}
+# Overall
+
+df_psd.bulk_atc.lgn %>% 
+  mutate(all="all") %>% 
+ ggplot( aes( x=all, y=pk_counts))+
+  geom_violin(color="grey20", alpha=0.3, fill="gray30", trim=F)+
+  geom_boxplot(width = 0.07)+
+  stat_boxplot(geom ='errorbar', width=0.2, position=position_dodge(0.5))+
+   scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  coord_fixed(ratio = 0.5)+
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.all.box.lgn
+
+
+# by cell type
+
+ ggplot(df_psd.bulk_atc.lgn, aes(x=celltype, y=pk_counts, fill = celltype))+
+  geom_violin(color="grey20", alpha=0.3, trim=F)+
+  geom_boxplot(width = 0.07)+
+  stat_boxplot(geom ='errorbar', width=0.2, position=position_dodge(0.5))+
+    scale_y_continuous(breaks = seq(0,10,1))+ #y-axis more easily readable
+  theme_bw()+ theme(text = element_text(size = 9, family="sans", color="black"), #stylisation
+        axis.text = element_text(size=9, color="black"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title=element_text(size=9, face = "bold"),
+        plot.subtitle=element_text(size=10.5),
+        plot.title=element_text(size=11, face = "bold"), 
+        legend.position ="none") -> v.plot.cells.box.lgn
+ 
+ v.plot.all.box.lgn|v.plot.cells.box.lgn
+```
+
+The counts are similarily distributed, however values are more centered around count value 1.5. Most counts range from 1 to 3. In contrast to CLR-normalized data the YSL/presumptive endoderm cells do not have slightly higher counts here. 
+
+# 4. Summary
+
+For the most part visualization itself works well. Pseudobulking using the Seurat package is successful as well. However, histograms and violin plots of both CLR and LogNormalize from the seurat package show that the data was not sufficiently normalized as most counts are in a range of 0.5 to 2 or 1 to 3. Whereas if the counts were well normalized one would expect most of them to range from 1 to 4. Moreover, out of both Seurat provided options "LogNormalize" yields the results closest to the expectation of well normalized ATAC-seq data.
+
+# Session info
+```{r session info}
+sessionInfo()
+```
+
+

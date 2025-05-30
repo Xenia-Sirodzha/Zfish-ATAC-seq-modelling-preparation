@@ -1,0 +1,85 @@
+---
+title: "Step 3: ATAC-Seq-Data-Analysis-QC on all cells"
+subtitle: "Step 3.1.2: Pseudo-Bulking and normalization of all cells using seurat's 'LogNormalize' "
+date: "2025-02-11"
+author: Xenia Sirodzha
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+---
+
+As the workflow for ATAC-seq QC was established in step 2, I performed this workflow on the entire data set. However, performing pseudo-bulking and normalization and subsequent visualization with the data from all cells is very computationally intensive. Therefore, pseudo-bulking and seurat provided normalization was performed separately from the visualization here. 
+
+# Libraries
+
+These are the packages required for the code below.
+```{r libraries}
+library(tidyverse) 
+library(binom)
+library(broom)
+library(Seurat) #for rna-seq data, atac-seq data
+library(Signac) #for atac seq data
+```
+
+
+# 1. Data loading and exploring 
+
+First I loaded these data sets into R to work with them. The data sets were extracted by Lauren Saunders based from [Lin et al. 2023](https://www.nature.com/articles/s41597-023-02373-y). 
+
+```{r data loading}
+readRDS("Data/Lin_2023_zfish_snATAC-seq/Cell-type_Peak_Matrix.rds") -> zfish_snATAC_seq_pk_mtrx #count matrix
+read_csv("Data/Lin_2023_zfish_snATAC-seq/atac_all.metaData.csv")-> zfish_mta_data # meta data
+```
+Then, I inspected the data sets with `class()` and `dim()`. 
+The matrix `zfish_snATAC_seq_pk_mtrx` contains the peaks as rownames and columns as cell names and counts as entries. As this is a sparse matrix, the 0s are written as dots. In addition, the data frame `zfish_mta_data` contains the meta data.
+
+```{r inspecting matrix and meta data}
+unique(zfish_mta_data$Clusters) #how many clusters in total
+class(zfish_snATAC_seq_pk_mtrx)
+class(zfish_mta_data)
+dim(zfish_snATAC_seq_pk_mtrx)
+zfish_snATAC_seq_pk_mtrx[1:10, 1:2]
+zfish_mta_data
+```
+
+For further analysis in this ATAC-Seq-QC to see whether this data set can be used to create a model which predicts chromatin accessibility based on genomic sequence alone, I will create a seurat object with the code below.
+
+```{r creating seurat object}
+zfish_atac=CreateSeuratObject(counts = zfish_snATAC_seq_pk_mtrx, assay = "atac", meta.data = zfish_mta_data)  #combines matrix and meta data into a seurat object
+```
+
+Here is an overview of the seurat object, obtained with the `glimpse` function.
+
+```{r inspecting seurat object}
+glimpse(zfish_atac)
+```
+
+# 2. Data transformation
+
+Next, the data was transformed.
+Overall, it was pseudo bulked, log normalized  and saved as an RDS file. pseudo-bulking and normalization was performed with the seurat function `AggregateExpression` and `return.seurat = T` was used to save the counts in a new pseudo-bulked seurat object `psd.bulk.zfish_atac`. 
+
+```{r data transformation}
+#pseudobulking and normalizing
+psd.bulk.zfish_atac= AggregateExpression(zfish_atac, group.by = "celltype", normalization.method ="LogNormalize", return.seurat = T ) 
+
+#output
+glimpse(psd.bulk.zfish_atac) 
+```
+
+The resulting seurat object was saved as an RDS for further use.
+```{r saving RDS, eval=FALSE}
+
+saveRDS(psd.bulk.zfish_atac, file = "Data/psd.bulk.zfish_atac.rds")
+```
+
+
+# Session Info
+
+Information about the coding environment can be found below.
+```{r session info}
+sessionInfo()
+```

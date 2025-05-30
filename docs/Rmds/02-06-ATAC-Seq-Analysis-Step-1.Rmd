@@ -1,0 +1,142 @@
+---
+title: "Step 1"
+subtitle: "Data inspection and reducing the data set to run it locally"
+date: "2025-02-06"
+author: Xenia Sirodzha
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+---
+
+Overall, the goal here was it to explore the data set and reduce it to run the subsequent ATAC-Seq Quality Control steps (ATAC-Seq-QC) locally. 
+
+# Libraries
+
+These are the packages required for the code below.
+
+```{r libraries}
+
+library(tidyverse) 
+library(binom)
+library(lubridate)
+library(broom)
+library(readxl) #for loading excel files
+library(ggsci)
+library(Seurat) #for RNA-seq and ATAC-seq data
+```
+
+
+# 1. ATAC-seq data loading and inspection
+
+## 1.1 Loading the data set into R
+
+All data was sourced from: Lin X, Yang X, Chen C, et al. Single-nucleus chromatin landscapes during zebrafish early embryogenesis. Sci Data. 2023;10(1):464. doi:10.1038/s41597-023-02373-y . 
+It was kindly compiled and pre-processed by Lauren Saunders. 
+
+
+First, the data was loaded into R using the code below.
+
+```{r data loading}
+readRDS("Data/Lin_2023_zfish_snATAC-seq/Cell-type_Peak_Matrix.rds") -> zfish_snATAC_seq_pk_mtrx #count matrix 
+read_csv("Data/Lin_2023_zfish_snATAC-seq/atac_all.metaData.csv")-> zfish_mta_data # meta data
+read_csv("Data/Lin_2023_zfish_snATAC-seq/SupplT2.csv")-> zfish_snATAC_seq_cell_type_mrkrs #markers for cell types
+```
+
+Then, the count matrix was explored: 
+```{r data inspection count matrix}
+class(zfish_snATAC_seq_pk_mtrx) #what class does the object have
+dim(zfish_snATAC_seq_pk_mtrx) #gives dimensions
+zfish_snATAC_seq_pk_mtrx[1:10, 1:2]
+```
+The object `zfish_snATAC_seq_pk_mtrx` is a compressed matrix consisting of 370058 rows, whose names represent the locations on the chromosome ("peak"), and 50637 columns, whose names represent all single cell samples, which were collected. The sample names include information about how many hours post fertilisation (hpf) the embryos were collected. 
+
+
+The data frame `zfish_snATAC_seq_pk_mtrx` contains the meta data information for every sample of the count matrix, such as cell type, reads in peaks and many more. 
+```{r data inspection meta data}
+class(zfish_mta_data)
+dim(zfish_mta_data)
+zfish_mta_data
+```
+
+
+The data frame `zfish_snATAC_seq_cell_type_mrkrs` contains further information on all peaks, which could have been used to assign cell types. 
+```{r data inspection zfish_snATAC_seq_cell_type_mrkrs}
+class(zfish_snATAC_seq_cell_type_mrkrs)
+dim(zfish_snATAC_seq_cell_type_mrkrs)
+zfish_snATAC_seq_cell_type_mrkrs
+```
+
+
+Additionally the two tables below were loaded and explored. 
+
+Supplementary table 1 consists mostly of descriptions of the isolation of each sample.
+```{r loading supplementary table 1}
+read_excel("Data/Lin_2023_zfish_snATAC-seq/SupplT11 summary table of data deposited.xlsx") #further experiment data Supplementary Table 1
+```
+
+
+Supplementary table 3 contains further information on large fraction of the peaks.
+```{r loading supplementary table 3}
+read_csv("Data/Lin_2023_zfish_snATAC-seq/SupplT13-all developmental stages intergrated cell type marker of scRNA-seq.csv") #further experiment data Supplementary Table 3
+
+```
+
+
+# 2. Data transformation
+
+## 2.1 Reducing the data sets to run locally
+
+Next, I reduced the count matrix `zfish_snATAC_seq_pk_mtrx` and meta data `zfish_mta_data` to perform QC steps locally before applying them to the data sets containing all samples and all peaks.  To achieve this, I selected cell types Lauren Saunders deemed interesting and sampled 1000 peaks randomly. 
+```{r subsetting meta data and count matrix}
+## subset cells for 5 celltypes
+unique(zfish_mta_data$celltype)
+
+## counting cells
+zfish_mta_data %>% 
+  group_by(celltype) %>% 
+  tally() %>% 
+  arrange(-n) %>% 
+  filter(celltype %in% c("neural crest", "periderm/epidermis", "lateral plate mesoderm", "primary neuron","YSL/presumptive endoderm")) %>% #one from each germ layer plus neural crest and neurons
+  mutate(sum(n)) #testing if the cell types add up to ~ 5000
+
+## filter selected celltypes
+sub_mta_data.df = zfish_mta_data %>% 
+  filter(celltype %in% c("neural crest", "periderm/epidermis", "lateral plate mesoderm", "primary neuron","YSL/presumptive endoderm"))
+
+##selecting 1000 peaks randomly
+sub_pk_mtrx = zfish_snATAC_seq_pk_mtrx[sample(rownames(zfish_snATAC_seq_pk_mtrx), 1000), c(unique(sub_mta_data.df$...1))]
+
+##testing if reduction was successful
+dim(sub_pk_mtrx)
+sub_pk_mtrx[1:10,1:10] 
+```
+There are around 5000 cells after subsetting cells of 5 cell types from the data set. 
+
+
+Lastly, as preparation for ATAC-Seq-QC on the reduced data set, I created a Seurat Object containing the reduced count matrix and meta data and saved it as an RDS file.
+```{r compiling the subsetted data into a seurat object}
+# creating Seurat Object 
+sub_zfish_atac=CreateSeuratObject(counts = sub_pk_mtrx, assay = "atac", meta.data = sub_mta_data.df)
+
+#save as RDS file
+saveRDS(sub_zfish_atac, file = "Data/Lin_2023_zfish_snATAC-seq/sub_zfish_atac.rds")
+```
+
+
+# Side-note: How to install Signac 
+
+I also installed the signac package. It was created by the [Stuart Lab](https://www.nature.com/articles/s41592-021-01282-5). Signac is a package, which was specially developed for ATAC-seq data sets. 
+
+```{r how to install signac, eval=FALSE}
+setRepositories(ind=1:3) # needed to automatically install Bioconductor dependencies
+install.packages("Signac")
+```
+
+# Session info 
+
+```{r session info}
+sessionInfo()
+```

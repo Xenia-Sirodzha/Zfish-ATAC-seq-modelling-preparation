@@ -1,0 +1,175 @@
+---
+title: "Step 4: Preparation of the sn-ATAC-seq-data set for modelling by Alexander Sasse's group"
+subtitle: "Step 4.1: Subsetting celltypes of interest and extracting peak names"
+date: "2025-03-06"
+author: Xenia Sirodzha
+output:
+  html_document: 
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    df_print: paged
+---
+
+The overall goal of this step was it to subset the cells of interest, extract their peaks and convert the peak names to a BED file. This file can be used for the next steps of the ATAC-Seq modelling project.
+
+# Libraries 
+
+These are the packages required for the coding in this document.
+```{r libraries}
+library(tidyverse) 
+library(Seurat)
+library(binom)
+library(lubridate)
+library(broom)
+library(readxl) #for loading excel files
+library(GenomicRanges)#bioconductor package for genomic ranges
+```
+
+
+# Data
+
+First I loaded the ATAC-seq data sets from [this paper](https://www.nature.com/articles/s41597-023-02373-y). 
+```{r data loading}
+readRDS("Data/Lin_2023_zfish_snATAC-seq/Cell-type_Peak_Matrix.rds") -> zfish_snATAC_seq_pk_mtrx #count matrix
+read_csv("Data/Lin_2023_zfish_snATAC-seq/atac_all.metaData.csv")-> zfish_mta_data # meta data
+```
+
+# Subsetting cells of interest
+
+Then, I subsetted cells of interest with the code below. 
+
+Cells of interest were those, which met following criteria:
+- celltypes/clusters with more than 500 cells -
+  - ensuring proper statistical analysis due to a sufficiently large sample size
+- at least 12hpf old
+  - the chromatin is starting to close at this age in zebrafish development
+- determined and fairly differentiated
+
+These criteria ensure that only representative data, which does not include many outliers or a small sample size, is used for modelling, as this is crucial for successful modelling. 
+
+```{r subsetting cells 12 hpf}
+zfish_mta_data %>% 
+  group_by(celltype) %>% 
+  add_tally() %>% #adding how many cells per cluster to df
+  filter(n>500) %>% #clusters with less than 500 cells
+  filter(!(celltype%in%c("UND","hypoblast","blastomere","epiblast"))) %>%   #removing celltypes which are undifferentiated or undefined/unassigned
+  separate_wider_delim(Sample, delim="h", names=c("hpf", "other")) %>% #extracting hpf from the Sample column
+  mutate(hpf=as.numeric(hpf)) %>% # converting hpf to numeric
+  filter(hpf>11) %>%  #removing all cells younger than 12hpf
+  select(...1,Clusters)-> mta.my.cells.12
+
+#overview of cell types 
+mta.my.cells.12 %>% 
+  tally() %>% 
+  arrange(n)
+  
+```
+
+After the filtering steps above, there were no celltypes with less than 345 cells left. However that is less than 500 cells. Moreover, than there are only a total of 483 neural crest cells which could be used for modelling. The Saunders group is particularly interested in neural crest cells. Therefore, it is desired that at least 500 cells remain in the data set for subsequent modelling.
+
+Thus, I tried out what happens if I remove all cells younger than 10hpf. 
+```{r subsetting cells 10 hpf}
+zfish_mta_data %>% 
+  group_by(celltype) %>% 
+  add_tally() %>% #adding how many cells per cluster to df
+  filter(n>500) %>% #clusters with less than 500 cells
+  filter(!(celltype%in%c("UND","hypoblast","blastomere","epiblast"))) %>%   #removing celltypes we do not want
+  separate_wider_delim(Sample, delim="h", names=c("hpf", "other")) %>% #extracting hpf from the Sample column
+  mutate(hpf=as.numeric(hpf)) %>% # converting hpf to numeric
+  filter(hpf>9) -> zfish_mta_data.10hpf  #removing all cells younger than 10hpf
+  select(zfish_mta_data.10hpf,...1,Clusters)-> mta.my.cells.10
+
+#overview of cell types 
+mta.my.cells.10 %>% 
+  tally() %>% 
+  arrange(n)
+  
+```
+
+Then, there are no clusters left with less than 500 cells and 1177 neural crest cells could be used for modelling. Therefore, this subsetted data (`mta.my.cells.10`) will be used for further modelling. 
+
+## Exporting to BED and RDS file
+
+To export it to a BED file, I needed to subset the peaks of my cells of interests. This was achieved by the code below.
+
+```{r subsetting peaks, eval=F}
+#extracting cell names as chr vector
+as.character(mta.my.cells.10$...1)-> chr.my.cells.10
+
+#subsetting matrix
+
+zfish_snATAC_seq_pk_mtrx[,c(chr.my.cells.10)] -> zfish_snATAC_seq_pk_mtrx.10hpf
+
+#subsetting peak names 
+rownames(zfish_snATAC_seq_pk_mtrx.10hpf)-> my.peaks.10
+```
+
+Then, once I had all the peak names, I needed to convert the data frame into a format that is suitable for the function `makeGRangesFromDataFrame()`. After that, I could export and save it as a BED file with the code below. In addition, the matrix with the counts was exported to an RDS file.
+
+```{r exporting peak names and matrix, eval=F}
+
+#extracting peaknames based on cells of interest
+tibble(my.peaks.10)%>% 
+  separate_wider_delim(my.peaks.10, delim=":", names=c("seqnames", "range")) %>% 
+  separate_wider_delim(range, delim="-", names = c("start", "end")) %>% 
+  makeGRangesFromDataFrame() -> my.peaks.gr
+
+# export as BED file
+rtracklayer::export(my.peaks.gr, "Data/peaks.zfish_snATAC.10hpf.bed", format = "BED") #bioconductor package
+
+#export matrix as RDS file
+
+saveRDS(zfish_snATAC_seq_pk_mtrx.10hpf, file = "Data/zfish_snATAC_seq_pk_mtrx.10hpf.rds")
+```
+
+# Pseudo-bulking
+
+For modelling I needed to pseudo-bulk the subsetted matrix `zfish_snATAC_seq_pk_mtrx.10hpf`. To achieve this, the matrix was loaded into the session, merged with the meta data into a seurat object and lastly pseudo bulked. Due to computational intensity normalization was performed in "03-06-ATAC-Seq-Analysis-Step-4.2-psdeudobulk+log 1+x norm subsetted-celltypes" separately. 
+
+## Data loading
+
+First, I loaded the subsetted matrix into the session, as this saves computational operations while coding. 
+
+```{r loading matrix}
+readRDS("Data/zfish_snATAC_seq_pk_mtrx.10hpf.rds") -> zfish_snATAC_seq_pk_mtrx.10hpf
+```
+
+Then, I created a seurat object with the meta data from the subsetted cells "zfish_mta_data.10hpf", this was saved as an RDS file for future use. 
+
+```{r saving as seurat object, eval=FALSE}
+zfish_atac.10hpf = CreateSeuratObject(counts = zfish_snATAC_seq_pk_mtrx.10hpf, assay = "atac", meta.data = zfish_mta_data.10hpf) #creating a seurat object
+saveRDS(zfish_atac.10hpf, file = "Data/zfish_atac.10hpf.rds")
+```
+
+This file can be read into the R session in the following manner.
+```{r inspecting seurat object}
+readRDS("Data/zfish_atac.10hpf.rds") -> zfish_atac.10hpf
+glimpse(zfish_atac.10hpf)
+```
+
+
+## Pseudo-bulking
+
+Now that the seurat object was made it can be used as an input to pseudo-bulk the cells we selected earlier. 
+
+```{r pseudo-bulking}
+psd.bulk.zfish_atac.10hpf= AggregateExpression(zfish_atac.10hpf, group.by = "celltype") #pseudobulking
+
+glimpse(psd.bulk.zfish_atac.10hpf) #output
+```
+
+The result was saved as a file as well. 
+```{r exporting pseudo-bulked object, eval=FALSE}
+#save as file
+
+saveRDS(psd.bulk.zfish_atac.10hpf, file = "Data/psd.bulk.zfish_atac.10hpf.rds")
+```
+
+# Session info 
+
+The session info, can be seen below.
+```{r session info}
+sessionInfo()
+```
+
